@@ -97,13 +97,12 @@ Using the same demo environment with two different resolutions produces differen
 
 This is a standard tradeoff in grid-based planning: **better geometric fidelity usually costs more computation**.
 
-### Coarser Grid (`resolution = 0.10`)
+### Coarser Grid (`resolution = 0.10`) vs. Finer Grid (`resolution = 0.03`)
 
-![Planner output with resolution 0.10](media/res_0_1.png)
-
-### Finer Grid (`resolution = 0.03`)
-
-![Planner output with resolution 0.03](media/res_0_03.png)
+<p align="center">
+  <img src="media/res_0_1.png" width="400">
+  <img src="media/res_0_03.png" width="400">
+</p>
 
 ---
 
