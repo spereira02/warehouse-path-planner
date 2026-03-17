@@ -104,6 +104,10 @@ This is a standard tradeoff in grid-based planning: **better geometric fidelity 
   <img src="media/res_0_03.png" width="450">
 </p>
 
+<p align="center">
+  <em>Figure: Effect of grid resolution on the planned path. Left: coarser grid (0.10). Right: finer grid (0.03).</em>
+</p>
+
 ---
 
 ## Notes
