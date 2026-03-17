@@ -100,8 +100,8 @@ This is a standard tradeoff in grid-based planning: **better geometric fidelity 
 ### Coarser Grid (`resolution = 0.10`) vs. Finer Grid (`resolution = 0.03`)
 
 <p align="center">
-  <img src="media/res_0_1.png" width="500">
-  <img src="media/res_0_03.png" width="500">
+  <img src="media/res_0_1.png" width="450">
+  <img src="media/res_0_03.png" width="450">
 </p>
 
 ---
