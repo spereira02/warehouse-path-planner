@@ -1,265 +1,327 @@
+from __future__ import annotations
+
 import heapq
 import math
-import numpy as np
-from typing import List, Tuple, Dict, Optional
 from collections import deque
+from dataclasses import dataclass
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+
+import numpy as np
 from shapely import box
-from shapely.geometry import Point as ShapelyPoint, LineString, Polygon
-from dg_commons.sim.models.diff_drive_structures import DiffDriveGeometry
-from dg_commons.sim.models.obstacles import StaticObstacle
+from shapely.geometry import LineString, Polygon
+from shapely.geometry.base import BaseGeometry
+
+from .obstacle import Obstacle
+from .robot import Robot
+
+Point2D = Tuple[float, float]
+Bounds = Tuple[float, float, float, float]
+
+def _as_geometry(obstacle: Obstacle | BaseGeometry) -> BaseGeometry:
+    """Return a shapely geometry from either an obstacle wrapper or raw geometry."""
+    if isinstance(obstacle, Obstacle):
+        return obstacle.shape
+    return obstacle
 
 
-class OccupancyGridGraph:
-    def __init__(
-        self,
-        static_obstacles: List[StaticObstacle],
-        bounds: Tuple[float, float, float, float],
-        ddg: DiffDriveGeometry,
-        resolution: float = 0.5,
-    ):
-        self.min_x, self.min_y, self.max_x, self.max_y = bounds
-        self.resolution = resolution
+@dataclass(frozen=True)
+class _GridGraph:
+    """ Container for occupancy grid graph """
 
-        self.robot_radius = ddg.radius
-        self.safety_margin = 0.1
-
-        # real, physically accurate buffer for collision check
-        self.robot_buffer = self.robot_radius + self.safety_margin
-        self.inflated_obstacles: List[Polygon] = []
-
-        # creating a grid, to later do the occupancy checks
-        self.width = int(np.ceil((self.max_x - self.min_x) / resolution))
-        self.height = int(np.ceil((self.max_y - self.min_y) / resolution))
-        self.grid = np.zeros((self.height, self.width), dtype=bool)
-
-        # first discretize contionous world into grid world then inflate obstacles and conduct collision checks
-        self._discretize_grid_and_collision_checks(static_obstacles)
-
-        # 4. Build Graph
-        self.coordinates: Dict[int, Tuple[float, float]] = {}
-        self.adj_list: Dict[int, List[int]] = {}
-        self.weights: Dict[Tuple[int, int], float] = {}
-        self.grid_to_id: Dict[Tuple[int, int], int] = {}
-        self._build_graph()
-
-    def _discretize_grid_and_collision_checks(self, obstacles: List[StaticObstacle]):
-        """
-        Input: List with static obstacles
-        Ouput: Occupancy grid
-        """
-        for obs in obstacles:
-            # inflate obstacles with buffer (r = robot_radius + margin)
-            inflated_obs = obs.shape.buffer(self.robot_buffer)
-            self.inflated_obstacles.append(inflated_obs)
-
-            min_ox, min_oy, max_ox, max_oy = (
-                inflated_obs.bounds
-            )  # min and max coordinate points for inflated grid geometries
-            # first we do a coordinate transform (min_ox - min_x), since scene bounds are from -12 to 12. We want relative position to grid bounds. \
-            # then scale the relative distance by /div self.resolution and finally discretize continous values to discrete ones.
-            x_start = max(0, int(np.floor((min_ox - self.min_x) / self.resolution)))
-            x_end = min(self.width - 1, int(np.floor((max_ox - self.min_x) / self.resolution)))
-            y_start = max(0, int(np.floor((min_oy - self.min_y) / self.resolution)))
-            y_end = min(self.height - 1, int(np.floor((max_oy - self.min_y) / self.resolution)))
-
-            for row in range(y_start, y_end + 1):  # calculating the edges of the grid
-                cell_y_min = self.min_y + row * self.resolution
-                cell_y_max = cell_y_min + self.resolution
-                for col in range(x_start, x_end + 1):
-                    if self.grid[row, col]:  # if already occupied -> continue
-                        continue
-                    cell_x_min = self.min_x + col * self.resolution
-                    cell_x_max = cell_x_min + self.resolution
-
-                    # creating shapely polygon box to use for collision checking
-                    cell_box = box(cell_x_min, cell_y_min, cell_x_max, cell_y_max)
-
-                    # essentially we check if the grid cell intersects at all with our inflated obstacle
-                    if inflated_obs.intersects(cell_box):
-                        self.grid[row, col] = True
-
-    def _build_graph(self):
-        node_count = 0
-
-        for row in range(self.height):
-            for col in range(self.width):
-                if not self.grid[row, col]:
-                    node_id = node_count
-                    node_count += 1
-                    self.grid_to_id[(row, col)] = node_id  # each node has a node id, accessable through grid pos
-                    # since we created a grid from [0,.., N] we need to shift it back to the original world frame
-                    wrld_x = (
-                        self.min_x + (col + 0.5) * self.resolution
-                    )  # (col + 0.5) is to shift the index into the middle of the cell, else it would be
-                    wrld_y = self.min_y + (row + 0.5) * self.resolution  # on the bottom left corner
-                    self.coordinates[node_id] = (wrld_x, wrld_y)
-                    self.adj_list[node_id] = []
-
-        # standard moves: up, down, left, right and diagnoally; here I just introduced the distance as a measure of cost
-        moves = [
-            (0, 1, 1),
-            (0, -1, 1),
-            (1, 0, 1),
-            (-1, 0, 1),
-            (1, 1, np.sqrt(2)),
-            (1, -1, np.sqrt(2)),
-            (-1, 1, np.sqrt(2)),
-            (-1, -1, np.sqrt(2)),
-        ]
-        for (row, col), curr_node_id in self.grid_to_id.items():
-            for dr, dc, cost in moves:
-                next_row, next_column = row + dr, col + dc
-
-                # to check if the neighbor is inside gird and not an obstacle
-                if (next_row, next_column) in self.grid_to_id:
-                    if dr != 0 and dc != 0:  # diagonal move
-                        if (
-                            self.grid[row, next_column] or self.grid[next_row, col]
-                        ):  # if diagonal cells are occupied, dont allow to move
-                            continue
-                    neighbor_node_id = self.grid_to_id[(next_row, next_column)]
-                    # building the adj list
-                    self.adj_list[curr_node_id].append(neighbor_node_id)
-                    self.weights[(curr_node_id, neighbor_node_id)] = self.resolution * cost
-
-    def get_node_coordinates(self, u: int) -> Tuple[float, float]:
-        return self.coordinates[u]
-
-    def get_weight(self, u: int, v: int) -> float:
-        return self.weights.get((u, v), float("inf"))
-
-    def find_nearest_node(self, pos: Tuple[float, float]) -> Optional[int]:
-        "For a given position we assign the corresponding (closest) node_id"
-
-        col = int(np.floor((pos[0] - self.min_x) / self.resolution))
-        row = int(np.floor((pos[1] - self.min_y) / self.resolution))
-
-        if (row, col) in self.grid_to_id:
-            return self.grid_to_id[(row, col)]
-
-        queue = deque([(row, col)])
-        visited = {(row, col)}
-        max_search_radius = 6
-        while queue:
-            current_row, current_column = queue.popleft()
-            if abs(current_row - row) > max_search_radius or abs(current_column - col) > max_search_radius:
-                continue
-            for dr in [-1, 0, 1]:  # we allow looking around in x from -1 to 1
-                for dc in [-1, 0, 1]:  # same for y, creating a 3x3 neighbor check around orignial postion
-                    next_row, next_column = current_row + dr, current_column + dc
-                    if (next_row, next_column) in visited:
-                        continue
-                    if (next_row, next_column) in self.grid_to_id:
-                        return self.grid_to_id[(next_row, next_column)]
-                    visited.add((next_row, next_column))
-                    queue.append((next_row, next_column))
-        return None
-
-    def check_collision_free(self, p1: Tuple[float, float], p2: Tuple[float, float]) -> bool:
-        """
-        Checks if a straight line between p1 and p2 intersects any obstacle.
-        """
-        line = LineString([p1, p2])
-        for obs_geom in self.inflated_obstacles:
-            if line.intersects(obs_geom):
-                return False
-        return True
+    coordinates: Dict[int, Point2D]             # key: node_id, value: (world_x, world_y)
+    adjacency: Dict[int, List[int]]             # key: node_id, value: List[neighbor_node_ids]
+    weights: Dict[Tuple[int, int], float]       # key: (from_node_id, to_node_id), value: distance between those nodes
+    grid_to_id: Dict[Tuple[int, int], int]      # key: (row, col), val: node_id
 
 
-class Astar:
-    def __init__(self, graph: OccupancyGridGraph):
-        self.graph = graph
+class _AStarSolver:
+    """Run A* on the occupancy-grid graph and returns the shortest path
+    Input: Graph (built through OccupancyGridPlanner)
+    """
+
+    def __init__(self, planner: "OccupancyGridPlanner"):
+        self.planner = planner
 
     def heuristic(self, u: int, v: int) -> float:
-        x1, y1 = self.graph.get_node_coordinates(u)
-        x2, y2 = self.graph.get_node_coordinates(v)
+        "Input are 2 node ids (start,goal)"
+        x1, y1 = self.planner.graph.coordinates[u]
+        x2, y2 = self.planner.graph.coordinates[v]
         return math.hypot(x2 - x1, y2 - y1)
 
     def path(
-        self, start_id: int, goal_id: int, start_pos: Tuple[float, float], goal_pos: Tuple[float, float]
-    ) -> List[Tuple[float, float]]:
-        """Takes in a start and goal position, the closest corresponding discrete grid node ids and computes shortest path.
-        Outputs list of waypoints marking shortest path
-        """
+        self,
+        start_id: int,
+        goal_id: int,
+        start_pos: Point2D,
+        goal_pos: Point2D,
+    ) -> List[Point2D]:
+        """Compute a shortest path, given start and goal id and greedily smooth it."""
         if start_id == goal_id:
             return [start_pos, goal_pos]
 
         counter = 0
-        queue = [(0.0, counter, start_id)]
-        came_from = {start_id: None}
-        g_score = {start_id: 0.0}
+        
+        # cost for the priority queue (min_heap) : f(n) = g(n) + h(n)
+        # total cost, g = cost so far, till node n, h = estimated cost to go (node->goal)
+        # tie-break logic for heap: take lowest cost, if costs tie: take node which was first inserted(lower counter val)
+        min_heap: List[Tuple[float, int, int]] = [(0.0, counter, start_id)]
+        came_from: Dict[int, Optional[int]] = {start_id: None}  # val None is used in _reconstruct_path() to identify start node
+        g_score: Dict[int, float] = {start_id: 0.0}
+        path_indices: List[int] = []
 
-        path_indices: List = []
-        found = False
-
-        while queue:
-            current_f, _, current = heapq.heappop(queue)
+        while min_heap:
+            current_f, _, current = heapq.heappop(min_heap)
             if current == goal_id:
                 path_indices = self._reconstruct_path(came_from, current)
-                found = True
                 break
 
             if current_f > g_score[current] + self.heuristic(current, goal_id):
                 continue
 
-            for neighbor in self.graph.adj_list.get(current, []):
-                tentative_g = g_score[current] + self.graph.get_weight(
-                    current, neighbor
-                )  # cost from current to next node
-                if tentative_g < g_score.get(
-                    neighbor, float("inf")
-                ):  # if new cost lower than previous one, update path
+            for neighbor in self.planner.graph.adjacency.get(current, []):
+                tentative_g = g_score[current] + self.planner.graph.weights[(current, neighbor)]
+                if tentative_g < g_score.get(neighbor, float("inf")):
                     came_from[neighbor] = current
                     g_score[neighbor] = tentative_g
-                    f_score = tentative_g + self.heuristic(neighbor, goal_id)
                     counter += 1
-                    heapq.heappush(queue, (f_score, counter, neighbor))
+                    f_score = tentative_g + self.heuristic(neighbor, goal_id)
+                    heapq.heappush(min_heap, (f_score, counter, neighbor))
 
-        if not found:
+        if not path_indices:
             return []
 
-        path_coords = [self.graph.get_node_coordinates(n_id) for n_id in path_indices]
+        path_coords = [self.planner.graph.coordinates[node_id] for node_id in path_indices]
         full_path = [start_pos] + path_coords + [goal_pos]
-
         return self.smooth_path(full_path)
 
-    def _reconstruct_path(self, came_from: Dict[int, int], current: int) -> List[Tuple[float, float]]:
-        path_indices = []
+    def _reconstruct_path(
+        self,
+        came_from: Dict[int, Optional[int]],
+        current: int,
+    ) -> List[int]:
+        path_indices: List[int] = []
         while current is not None:
             path_indices.append(current)
             current = came_from[current]
         path_indices.reverse()
         return path_indices
 
-    def smooth_path(self, raw_path: List[Tuple[float, float]]) -> List[Tuple[float, float]]:
-        """
-        Applies greedy shortcutting to remove zig-zags. Mainly fixing start/goal issues: Input coordinates are floats
-        algo wants discrete nodes, therefore we need to somehow connect the discrete nodes with the continous pos of start/goal in a smooth manner
+    def smooth_path(self, raw_path: Sequence[Point2D]) -> List[Point2D]:
+        """start at the current waypoint, initially the start
+        * try to connect it directly to the goal
+        * if that collides, try the waypoint before the goal
+        * keep moving backward until you find the farthest waypoint that can be reached in a straight collision-free line
+        * add that waypoint to the smoothed path
+        * move current_index to that waypoint
+        * repeat until the current waypoint is the final one
         """
         if len(raw_path) <= 2:
-            return raw_path
+            return list(raw_path)
 
         smoothed = [raw_path[0]]
-        curr_idx = 0
+        current_index = 0
 
-        while curr_idx < len(raw_path) - 1:
-            target_found = False
-            # from the curr_idx we look backwards to start and check if path is collision free
-            for check_idx in range(len(raw_path) - 1, curr_idx, -1):
-                p1 = raw_path[curr_idx]
-                p2 = raw_path[check_idx]
-
-                if self.graph.check_collision_free(p1, p2):
-                    # Found a shortcut!
-                    smoothed.append(p2)
-                    curr_idx = check_idx
-                    target_found = True
+        while current_index < len(raw_path) - 1:
+            shortcut_found = False
+            for check_index in range(len(raw_path) - 1, current_index, -1):
+                if self.planner.check_collision_free(raw_path[current_index], raw_path[check_index]):
+                    smoothed.append(raw_path[check_index])
+                    current_index = check_index
+                    shortcut_found = True
                     break
 
-            # Fallback (shouldn't happen in valid A* path, but for safety)
-            if not target_found:
-                curr_idx += 1
-                smoothed.append(raw_path[curr_idx])
+            if not shortcut_found:
+                current_index += 1
+                smoothed.append(raw_path[current_index])
 
         return smoothed
 
+
+class OccupancyGridPlanner:
+    """Plan collision-free 2D paths on an occupancy grid."""
+
+    def __init__(
+        self,
+        obstacles: Iterable[Obstacle | BaseGeometry],
+        bounds: Bounds,
+        robot: Robot,
+        resolution: float = 0.5,
+        safety_margin: float | None =  None,
+        temporary_obstacles: Optional[Iterable[Obstacle | BaseGeometry]] = None,
+        temporary_safety_margin: Optional[float] = None,
+    ):
+        self.min_x, self.min_y, self.max_x, self.max_y = bounds
+        self.resolution = resolution
+        self.robot = robot
+        self.safety_margin = 0.2 * robot.radius if safety_margin is None else safety_margin
+        self.temporary_safety_margin = (
+            self.safety_margin if temporary_safety_margin is None else temporary_safety_margin
+        )
+
+        self.obstacles = list(obstacles)
+        self.temporary_obstacles = list(temporary_obstacles or [])
+
+        self.robot_buffer = self.robot.radius + self.safety_margin
+        self.temporary_robot_buffer = self.robot.radius + self.temporary_safety_margin + self.robot.radius
+        self.inflated_obstacles: List[Polygon] = []
+
+        self.width = int(np.ceil((self.max_x - self.min_x) / resolution))
+        self.height = int(np.ceil((self.max_y - self.min_y) / resolution))
+        self.grid = np.zeros((self.height, self.width), dtype=bool)
+
+        self._discretize_grid_and_collision_checks()
+        self.graph = self._build_graph()
+        self._solver = _AStarSolver(self)
+
+    def _discretize_grid_and_collision_checks(self) -> None:
+        """Rasterize inflated obstacles into the occupancy grid. Function is also able to construct temporary obstacles for other robots in a multi-agent setting
+        """
+        # Inflate static obstacles by robot radius plus safety margin.
+        for obstacle in self.obstacles:
+            inflated = _as_geometry(obstacle).buffer(self.robot_buffer)
+            self.inflated_obstacles.append(inflated)
+
+        # incase of the multi-agent (robot) setting, add other robots than self to obstacles temporarily
+        for obstacle in self.temporary_obstacles:
+            inflated = _as_geometry(obstacle).buffer(self.temporary_robot_buffer)
+            self.inflated_obstacles.append(inflated)
+
+        for inflated_obstacle in self.inflated_obstacles:
+            min_ox, min_oy, max_ox, max_oy = inflated_obstacle.bounds
+
+            # */
+            # map relevant region, in which obstacle could potentially be in to grid coordinates, by performing a shift
+            # inflated shapes live in contninous world (for example spanning -x to x and -y to y)
+            # -> we need to map the inflated shapes from cont world to our discrete grid (which is of geom mxn, m = 2*y/resolution, n = 2*x/resolution)
+            # /*
+            x_start = max(0, int(np.floor((min_ox - self.min_x) / self.resolution)))
+            x_end = min(self.width - 1, int(np.floor((max_ox - self.min_x) / self.resolution)))
+            y_start = max(0, int(np.floor((min_oy - self.min_y) / self.resolution)))
+            y_end = min(self.height - 1, int(np.floor((max_oy - self.min_y) / self.resolution)))
+
+            # scan the region of interest and check if current cell intersects obstacle
+            for row in range(y_start, y_end + 1):
+                cell_y_min = self.min_y + row * self.resolution
+                cell_y_max = cell_y_min + self.resolution
+                for col in range(x_start, x_end + 1):
+                    if self.grid[row, col]:
+                        continue
+                    # */ to avoid collision we check if any part of the cell intesects the inflated obstacle, 
+                    # if we only checked the cell center, we might miss an intersections and cause collision /*
+                    cell_x_min = self.min_x + col * self.resolution
+                    cell_x_max = cell_x_min + self.resolution
+                    cell_box = box(cell_x_min, cell_y_min, cell_x_max, cell_y_max)
+
+                    if inflated_obstacle.intersects(cell_box):
+                        self.grid[row, col] = True
+
+    def _build_graph(self) -> _GridGraph:
+        """Build the connectivity graph for all free grid cells."""
+        node_count = 0
+        coordinates: Dict[int, Point2D] = {}
+        adjacency: Dict[int, List[int]] = {}
+        weights: Dict[Tuple[int, int], float] = {}
+        grid_to_id: Dict[Tuple[int, int], int] = {}
+
+        for row in range(self.height):
+            for col in range(self.width):
+                if self.grid[row, col]:         #cell is part of an obstacle -> skip
+                    continue
+
+                node_id = node_count
+                node_count += 1
+                grid_to_id[(row, col)] = node_id
+
+                # revert back from grid indices to world coordinates
+                world_x = self.min_x + (col + 0.5) * self.resolution
+                world_y = self.min_y + (row + 0.5) * self.resolution
+                coordinates[node_id] = (world_x, world_y)
+                adjacency[node_id] = []
+
+        # (move direction in x, move dir in y, distance (cost))
+        moves = [
+            (0, 1, 1.0),
+            (0, -1, 1.0),
+            (1, 0, 1.0),
+            (-1, 0, 1.0),
+            (1, 1, math.sqrt(2)),
+            (1, -1, math.sqrt(2)),
+            (-1, 1, math.sqrt(2)),
+            (-1, -1, math.sqrt(2)),
+        ]
+
+        for (row, col), current_node_id in grid_to_id.items():
+            for dr, dc, move_cost in moves:
+                next_row = row + dr
+                next_col = col + dc
+
+                if (next_row, next_col) not in grid_to_id:
+                    continue
+
+                if dr != 0 and dc != 0:
+                    if self.grid[row, next_col] or self.grid[next_row, col]:    # obstacle detected
+                        continue
+
+                neighbor_node_id = grid_to_id[(next_row, next_col)]
+                adjacency[current_node_id].append(neighbor_node_id)
+                weights[(current_node_id, neighbor_node_id)] = self.resolution * move_cost
+
+        return _GridGraph(
+            coordinates=coordinates,
+            adjacency=adjacency,
+            weights=weights,
+            grid_to_id=grid_to_id,
+        )
+
+    def find_nearest_node(self, position: Point2D) -> Optional[int]:
+        """Return the nearest reachable graph node for a world-space position."""
+        #convert world_coordinates into grid indices
+        col = int(np.clip(np.floor((position[0] - self.min_x) / self.resolution), 0, self.width - 1))
+        row = int(np.clip(np.floor((position[1] - self.min_y) / self.resolution), 0, self.height - 1))
+        if (row, col) in self.graph.grid_to_id:
+            return self.graph.grid_to_id[(row, col)]
+
+        queue = deque([(row, col)])
+        visited = {(row, col)}
+        max_search_radius = 1.2 / self.resolution
+
+        while queue:
+            current_row, current_col = queue.popleft()
+            if abs(current_row - row) > max_search_radius or abs(current_col - col) > max_search_radius:
+                continue
+
+            for delta_row in [-1, 0, 1]:
+                for delta_col in [-1, 0, 1]:
+                    next_row = current_row + delta_row
+                    next_col = current_col + delta_col
+                    if (next_row, next_col) in visited:
+                        continue
+                    if (next_row, next_col) in self.graph.grid_to_id:
+                        return self.graph.grid_to_id[(next_row, next_col)]
+                    visited.add((next_row, next_col))
+                    queue.append((next_row, next_col))
+
+        return None
+
+    def check_collision_free(self, point_a: Point2D, point_b: Point2D) -> bool:
+        """Check whether the straight segment between two points is obstacle-free."""
+        line = LineString([point_a, point_b])
+        for obstacle in self.inflated_obstacles:
+            if line.intersects(obstacle):
+                return False
+        return True
+        
+
+    def plan(self, start: Point2D, goal: Point2D) -> List[Point2D]:
+        """Plan a path from start to goal in world coordinates."""
+        start_id = self.find_nearest_node(start)
+        goal_id = self.find_nearest_node(goal)
+
+        if start_id is None or goal_id is None:
+            return []
+
+        return self._solver.path(start_id, goal_id, start, goal)
+
+
+# Backward-compatible alias for the previous class name.
+OccupancyGridGraph = OccupancyGridPlanner
