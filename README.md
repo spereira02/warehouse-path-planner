@@ -117,7 +117,7 @@ Using the same demo environment with two different resolutions produces differen
 
 | Resolution | Path Length | Runtime [ms] | Nodes Explored |
 |-----------|-------------|--------------|----------------|
-| `0.10`    | `20.8797`   | `32.8467`    | `10297.`          |
+| `0.10`    | `20.8797`   | `32.8467`    | `10297`          |
 | `0.03`    | `16.9215`   | `387.7216`        | `84754`          |
 
 This is a standard tradeoff in grid-based planning: **better geometric fidelity usually costs more computation**.
