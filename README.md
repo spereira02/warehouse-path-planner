@@ -18,7 +18,7 @@ The planner is split into two main parts:
 
 ### 1. `OccupancyGridPlanner`
 
-`OccupancyGridPlanner` is responsible for turning a continuous map into a search problem.
+`OccupancyGridPlanner` is responsible for converting a continuous geometric environment into a graph search problem.
 
 It takes:
 - map bounds
@@ -32,11 +32,20 @@ From this, it:
 
 - discretizes the continuous workspace into an **occupancy grid**
 - inflates obstacles based on the robot radius and safety margin
+- treats the robot as a **point robot after obstacle inflation**
 - marks grid cells as free or occupied
 - builds a graph over the free cells
-- connects neighboring cells
+- connects neighboring cells using local grid connectivity
 - maps the continuous start and goal positions to valid graph nodes
 - calls the A* planner to compute the shortest collision-free path
+
+Inflating the obstacles before planning is a standard robotics simplification: instead of planning with the full robot geometry directly, the environment is expanded by the robot footprint and safety margin. This allows the planner to operate on a **point robot model** while still maintaining collision clearance.
+
+The graph is constructed over free cells in the occupancy grid. Neighboring cells are connected using grid-based adjacency, with **8-connectivity**:
+- horizontal / vertical moves have cost `1`
+- diagonal moves have cost `√2`
+
+This produces a weighted graph that approximates shortest-path motion in the discretized workspace.
 
 In other words, this class handles the **environment representation** and the conversion from continuous geometry to a graph search problem.
 
@@ -57,16 +66,17 @@ This part is responsible for:
 - using a heuristic to guide the search efficiently
 - reconstructing the final shortest path once the goal is reached
 
+So while `OccupancyGridPlanner` builds the navigable graph, `AStar` is the component that actually finds the route through it.
+
 ## Heuristic
 
 The planner uses Euclidean distance as the heuristic function.
 
 h(n) = √((x_goal - x_n)^2 + (y_goal - y_n)^2)
 
-This heuristic is admissible for grid navigation and ensures optimal paths
-while significantly reducing search effort compared to Dijkstra’s algorithm.
-
-So while `OccupancyGridPlanner` builds the navigable graph, `AStar` is the component that actually finds the route through it.
+This heuristic is admissible for grid navigation and preserves optimality
+while guiding the search toward the goal more efficiently than uninformed
+search methods.
 
 ---
 
@@ -105,10 +115,10 @@ The planner represents the world as an **occupancy grid**, so the chosen grid re
 
 Using the same demo environment with two different resolutions produces different valid paths:
 
-| Resolution | Path Length | Runtime |
-|-----------|-------------|--------|
-| `0.10` | `20.8797` | near-instant |
-| `0.03` | `16.9215` | noticeably slower |
+| Resolution | Path Length | Runtime [ms] | Nodes Explored |
+|-----------|-------------|--------------|----------------|
+| `0.10`    | `20.8797`   | `32.8467`    | `10297.`          |
+| `0.03`    | `16.9215`   | `387.7216`        | `84754`          |
 
 This is a standard tradeoff in grid-based planning: **better geometric fidelity usually costs more computation**.
 
@@ -139,3 +149,17 @@ This planner was originally used inside a larger **multi-robot warehouse project
 The video below shows the broader system context in which this planner was used:
 
 https://github.com/user-attachments/assets/7e8ee39e-a14b-46ac-9ff4-47c9e18d4fcd
+
+---
+
+## Limitations
+
+This planner assumes a static 2D environment and does not explicitly model
+robot dynamics or nonholonomic constraints. It should therefore be understood
+as a classical geometric path planner rather than a full motion-planning or
+trajectory-generation framework.
+
+Possible future extensions include:
+- dynamic replanning when the environment changes
+- integration into multi-robot coordination frameworks
+- trajectory generation that accounts for robot kinematics
