@@ -72,7 +72,7 @@ So while `OccupancyGridPlanner` builds the navigable graph, `AStar` is the compo
 
 The planner uses Euclidean distance as the heuristic function.
 
-h(n) = √((x_goal - x_n)^2 + (y_goal - y_n)^2)
+`h(n) = sqrt((x_goal - x_n)^2 + (y_goal - y_n)^2)`
 
 This heuristic is admissible for grid navigation and preserves optimality
 while guiding the search toward the goal more efficiently than uninformed
