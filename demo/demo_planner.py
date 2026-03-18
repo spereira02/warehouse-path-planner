@@ -13,6 +13,15 @@ if str(SRC_DIR) not in sys.path:
 from warehouse_planner import Obstacle, OccupancyGridPlanner, Robot
 
 
+def path_length(path):
+    total_length = 0.0
+    for i in range(len(path) - 1):
+        x1, y1 = path[i]
+        x2, y2 = path[i + 1]
+        total_length += math.hypot(x2 - x1, y2 - y1)
+    return total_length
+
+
 def main():
     """Build a small map, run the planner, and print the path."""
     robot = Robot(radius=0.35)
@@ -46,21 +55,23 @@ def main():
     start = (-9.0, 8.5)
     goal = (1.8, 0.0)
     path = planner.plan(start=start, goal=goal)
+    result = {
+        "path": path,
+        "runtime_ms": planner.last_runtime_ms,
+        "nodes_explored": planner.last_nodes_explored,
+        "path_length": path_length(path),
+    }
 
     print("Planned path:")
-    if not path:
+    if not result["path"]:
         print("  No path found.")
         return
 
-    for waypoint in path:
+    for waypoint in result["path"]:
         print(f"  {waypoint}")
-    total_length = 0.0
-    for i in range(len(path) - 1):
-        x1, y1 = path[i]
-        x2, y2 = path[i + 1]
-        total_length += math.hypot(x2 - x1, y2 - y1)
-
-    print("Total length of path:", total_length)
+    print("Total length of path:", result["path_length"])
+    print("Runtime (ms):", result["runtime_ms"])
+    print("Nodes explored:", result["nodes_explored"])
 
 
     try:
@@ -88,8 +99,8 @@ def main():
             label=label,
         )
 
-    path_x = [point[0] for point in path]
-    path_y = [point[1] for point in path]
+    path_x = [point[0] for point in result["path"]]
+    path_y = [point[1] for point in result["path"]]
     axis.plot(path_x, path_y, marker="o", color="tab:blue", linewidth=2, label="Path")
     axis.scatter([start[0]], [start[1]], color="tab:green", s=80, label="Start")
     axis.scatter([goal[0]], [goal[1]], color="tab:red", s=80, label="Goal")

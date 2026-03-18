@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import heapq
 import math
+import time
 from collections import deque
 from dataclasses import dataclass
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
@@ -41,6 +42,8 @@ class _AStarSolver:
 
     def __init__(self, planner: "OccupancyGridPlanner"):
         self.planner = planner
+        self.nodes_explored = 0
+        self.runtime_ms = 0.0
 
     def heuristic(self, u: int, v: int) -> float:
         "Input are 2 node ids (start,goal)"
@@ -56,10 +59,13 @@ class _AStarSolver:
         goal_pos: Point2D,
     ) -> List[Point2D]:
         """Compute a shortest path, given start and goal id and greedily smooth it."""
+        self.nodes_explored = 0
+        self.runtime_ms = 0.0
         if start_id == goal_id:
             return [start_pos, goal_pos]
 
         counter = 0
+        t_start = time.perf_counter()
         
         # cost for the priority queue (min_heap) : f(n) = g(n) + h(n)
         # total cost, g = cost so far, till node n, h = estimated cost to go (node->goal)
@@ -78,6 +84,7 @@ class _AStarSolver:
             if current_f > g_score[current] + self.heuristic(current, goal_id):
                 continue
 
+            self.nodes_explored += 1
             for neighbor in self.planner.graph.adjacency.get(current, []):
                 tentative_g = g_score[current] + self.planner.graph.weights[(current, neighbor)]
                 if tentative_g < g_score.get(neighbor, float("inf")):
@@ -88,11 +95,16 @@ class _AStarSolver:
                     heapq.heappush(min_heap, (f_score, counter, neighbor))
 
         if not path_indices:
+            t_end = time.perf_counter()
+            self.runtime_ms = (t_end - t_start) * 1000
             return []
 
         path_coords = [self.planner.graph.coordinates[node_id] for node_id in path_indices]
         full_path = [start_pos] + path_coords + [goal_pos]
-        return self.smooth_path(full_path)
+        path = self.smooth_path(full_path)
+        t_end = time.perf_counter()
+        self.runtime_ms = (t_end - t_start) * 1000
+        return path
 
     def _reconstruct_path(
         self,
@@ -136,7 +148,6 @@ class _AStarSolver:
 
         return smoothed
 
-
 class OccupancyGridPlanner:
     """Plan collision-free 2D paths on an occupancy grid."""
 
@@ -172,6 +183,8 @@ class OccupancyGridPlanner:
         self._discretize_grid_and_collision_checks()
         self.graph = self._build_graph()
         self._solver = _AStarSolver(self)
+        self.last_runtime_ms = 0.0
+        self.last_nodes_explored = 0
 
     def _discretize_grid_and_collision_checks(self) -> None:
         """Rasterize inflated obstacles into the occupancy grid. Function is also able to construct temporary obstacles for other robots in a multi-agent setting
@@ -318,9 +331,14 @@ class OccupancyGridPlanner:
         goal_id = self.find_nearest_node(goal)
 
         if start_id is None or goal_id is None:
+            self.last_runtime_ms = 0.0
+            self.last_nodes_explored = 0
             return []
 
-        return self._solver.path(start_id, goal_id, start, goal)
+        path = self._solver.path(start_id, goal_id, start, goal)
+        self.last_runtime_ms = self._solver.runtime_ms
+        self.last_nodes_explored = self._solver.nodes_explored
+        return path
 
 
 # Backward-compatible alias for the previous class name.
