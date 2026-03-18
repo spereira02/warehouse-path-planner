@@ -1,8 +1,14 @@
 ## Warehouse Path Planner
 
-A small Python package for **2D path planning in warehouse-style environments** using an occupancy grid and A* search.
+Mobile robots operating in warehouse environments must compute collision-free paths through cluttered spaces. These environments are commonly represented as **occupancy grids**, where free and occupied areas of the map are discretized.
 
-This repository extracts the path planning component from a larger university robotics project and packages it as a standalone module. The planner takes a continuous 2D map with polygonal obstacles, discretizes it into an occupancy grid, builds a graph over collision-free cells, and computes a path between a start and goal position.
+This project implements a classical grid-based path planning pipeline:
+
+Continuous Map → Occupancy Grid → Graph Construction → A* Search → Optimal Path
+
+The planner takes a **continuous 2D map with polygonal obstacles**, converts it into an **occupancy grid**, and constructs a graph over the collision-free cells. The **A\*** algorithm is then used to compute the shortest path between a specified start and goal position.
+
+Originally developed as part of a university robotics project involving a swarm of differential-drive robots, this repository packages the path planner as a **standalone module** that demonstrates how classical search algorithms can be integrated into a robotics navigation pipeline.
 
 ---
 
@@ -50,6 +56,15 @@ This part is responsible for:
 - tracking the current best-known cost to each node
 - using a heuristic to guide the search efficiently
 - reconstructing the final shortest path once the goal is reached
+
+## Heuristic
+
+The planner uses Euclidean distance as the heuristic function.
+
+h(n) = √((x_goal - x_n)^2 + (y_goal - y_n)^2)
+
+This heuristic is admissible for grid navigation and ensures optimal paths
+while significantly reducing search effort compared to Dijkstra’s algorithm.
 
 So while `OccupancyGridPlanner` builds the navigable graph, `AStar` is the component that actually finds the route through it.
 
