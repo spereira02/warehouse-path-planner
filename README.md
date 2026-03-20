@@ -12,6 +12,16 @@ Originally developed as part of a university robotics project involving a swarm 
 
 ---
 
+## Original System Demo
+
+This planner was originally used inside a larger **multi-robot warehouse project**.
+
+The video below shows the broader system context in which this planner was used:
+
+https://github.com/user-attachments/assets/7e8ee39e-a14b-46ac-9ff4-47c9e18d4fcd
+
+---
+
 ## What the Planner Does
 
 The planner is split into two main parts:
@@ -142,15 +152,6 @@ This is a standard tradeoff in grid-based planning: **better geometric fidelity 
 
 ---
 
-## Original System Demo
-
-This planner was originally used inside a larger **multi-robot warehouse project**.
-
-The video below shows the broader system context in which this planner was used:
-
-https://github.com/user-attachments/assets/7e8ee39e-a14b-46ac-9ff4-47c9e18d4fcd
-
----
 
 ## Limitations
 
